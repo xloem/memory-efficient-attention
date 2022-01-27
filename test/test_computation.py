@@ -37,14 +37,18 @@ class ComputationTest(unittest.TestCase):
         return Qb, Kb, Vb, Mb, Bb
 
     @staticmethod
-    def calc_pt(data, **kwparams):
+    def calc_pt(data, return_weights=False):
         Qb, Kb, Vb, Mb, Bb = data
         Qbt = torch.tensor(Qb, requires_grad=True)
         Kbt = torch.tensor(Kb, requires_grad=True)
         Vbt = torch.tensor(Vb, requires_grad=True)
         Bbt = torch.tensor(Bb, requires_grad=True)
         Mbt = torch.tensor(Mb)
-        return efficient_dot_product_attention_pt(Qbt, Kbt, Vbt, Mbt, Bbt, **kwparams).detach().numpy()
+        out = efficient_dot_product_attention_pt(Qbt, Kbt, Vbt, Mbt, Bbt, return_weights=return_weights)
+        if return_weights:
+            return out[0].detach().numpy(), out[1].detach().numpy()
+        else:
+            return out.detach().numpy()
 
     @staticmethod
     def calc_jax(data):
@@ -52,9 +56,13 @@ class ComputationTest(unittest.TestCase):
         return np.asarray(efficient_dot_product_attention_jax(Qb, Kb, Vb, Mb, Bb))
 
     @staticmethod
-    def calc_flax(data):
+    def calc_flax(data, return_weights=False):
         Qb, Kb, Vb, Mb, Bb = data
-        return np.asarray(dot_product_attention(Qb, Kb, Vb, Bb, Mb))
+        out = dot_product_attention(Qb, Kb, Vb, Bb, Mb, return_weights=return_weights)
+        if return_weights:
+            return np.asarray(out[0]), np.asarray(out[1])
+        else:
+            return np.asarray(out)
 
     def test_pt(self):
         data = ComputationTest.data()
