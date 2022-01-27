@@ -118,7 +118,7 @@ def efficient_dot_product_attention(query, key, value,
         else:
             bias_chunk = None
         if weights is not None:
-            weights_chunk = dynamic_slice(weights, tuple([0] * (bias.ndim - 3)) + (chunk_idx, 0, 0),
+            weights_chunk = dynamic_slice(weights, tuple([0] * (weights.ndim - 3)) + (chunk_idx, 0, 0),
                                           tuple(weights.shape[:-3]) + (min(query_chunk_size, num_q), num_heads, num_kv))
         else:
             weights_chunk = None

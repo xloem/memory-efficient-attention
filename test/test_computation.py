@@ -51,9 +51,13 @@ class ComputationTest(unittest.TestCase):
             return out.detach().numpy()
 
     @staticmethod
-    def calc_jax(data):
+    def calc_jax(data, return_weights=False):
         Qb, Kb, Vb, Mb, Bb = data
-        return np.asarray(efficient_dot_product_attention_jax(Qb, Kb, Vb, Mb, Bb))
+        out = efficient_dot_product_attention_jax(Qb, Kb, Vb, Mb, Bb)
+        if return_weights:
+            return np.asarray(out[0]), np.asarray(out[1])
+        else:
+            return np.asarray(out) 
 
     @staticmethod
     def calc_flax(data, return_weights=False):
@@ -79,6 +83,10 @@ class ComputationTest(unittest.TestCase):
         res_jax = ComputationTest.calc_jax(data)
         res_flax = ComputationTest.calc_flax(data)
         self.assertTrue(np.allclose(res_jax, res_flax))
+        res_jax, weights_jax = ComputationTest.calc_jax(data, return_weights=True)
+        res_flax, weights_flax = ComputationTest.calc_flax(data, return_weights=True)
+        self.assertTrue(np.allclose(res_jax, res_flax))
+        self.assertTrue(np.allclose(weights_jax, weights_flax))
 
     def test_jax_and_pt(self):
         data = ComputationTest.data()
