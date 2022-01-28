@@ -22,8 +22,6 @@ def _query_chunk_attention(query, key, value, mask, bias, precision, key_chunk_s
             big_neg = jnp.finfo(attn_weights.dtype).min
             mask = jnp.einsum('...hqk->...qhk', mask)
             attn_weights = jnp.where(mask, attn_weights, big_neg)
-        #if weights_out is not None:
-        #    weights_out[:] = jax.lax.stop_gradient(attn_weights)
         max_score = jnp.max(attn_weights, axis=-1, keepdims=True)
         max_score = jax.lax.stop_gradient(max_score)
         exp_weights = jnp.exp(attn_weights - max_score)
@@ -51,12 +49,6 @@ def _query_chunk_attention(query, key, value, mask, bias, precision, key_chunk_s
                 slice_sizes=tuple(mask.shape[:-3]) + (num_heads, num_q, key_chunk_size))
         else:
             mask_chunk = None
-        #if weights_out is not None:
-        #    weights_chunk = jax.lax.dynamic_slice(
-        #        weights_out, tuple([0] * (weights_out.ndim - 3)) + (0, 0, chunk_idx),
-        #        slice_sizes=tuple(weights_out.shape[:-3]) + (num_q, num_heads, key_chunk_size))
-        #else:
-        #    weights_chunk = None
         return summarize_chunk(query, key_chunk, value_chunk, mask_chunk, bias_chunk)
 
     chunk_values, chunk_weights, chunk_attentions, chunk_max = jax.lax.map(
@@ -81,7 +73,7 @@ def efficient_dot_product_attention(query, key, value,
                                     precision=jax.lax.Precision.HIGHEST,
                                     query_chunk_size=1024,
                                     key_chunk_size=4096,
-                                    return_weights=False):
+                                    return_attentions=False):
     """Computes efficient dot-product attention given query, key, and value.
       This is efficient version of attention presented in
       https://arxiv.org/abs/2112.05682v2 which comes with O(sqrt(n)) memory requirements.
@@ -106,19 +98,12 @@ def efficient_dot_product_attention(query, key, value,
         key_chunk_size: int: key chunks size
         precision: numerical precision of the computation see `jax.lax.Precision`
                 for details.
-        return_weights: If specified, a tuple of (output, attentionts) will be returned.
+        return_attentions: If specified, a tuple of (output, attentions) will be returned.
       Returns:
         Output of shape `[batch..., q_length, num_heads, v_depth_per_head]`.
       """
     num_q, num_heads, q_features = query.shape[-3:]
     num_kv = key.shape[-3]
-
-    if return_weights:
-        attentions = []
-    #    weights = jnp.empty((*value.shape[:-3], num_q, num_heads, num_kv))
-    else:
-    #    weights = None
-        attentions = None
 
     def chunk_scanner(chunk_idx, _):
         query_chunk = jax.lax.dynamic_slice(
@@ -136,23 +121,17 @@ def efficient_dot_product_attention(query, key, value,
                 slice_sizes=tuple(bias.shape[:-3]) + (num_heads, min(query_chunk_size, num_q), num_kv))
         else:
             bias_chunk = None
-        #if weights is not None:
-        #    weights_chunk = jax.lax.dynamic_slice(
-        #        weights, tuple([0] * (weights.ndim - 3)) + (chunk_idx, 0, 0),
-        #        slice_sizes=tuple(weights.shape[:-3]) + (min(query_chunk_size, num_q), num_heads, num_kv))
-        #else:
-        #    weights_chunk = None
 
         out, attn_chunk = _query_chunk_attention(query_chunk, key, value, mask_chunk, bias_chunk,
-                                                 precision=precision, key_chunk_size=key_chunk_size, return_attentions=return_weights)
-        if return_weights:
+                                                 precision=precision, key_chunk_size=key_chunk_size, return_attentions=return_attentions)
+        if return_attentions:
             out = (out, attn_chunk)
 
         return (chunk_idx + query_chunk_size, out)
 
     _, res = jax.lax.scan(
         chunk_scanner, init=0, xs=None, length=math.ceil(num_q / query_chunk_size))
-    if return_weights:
+    if return_attentions:
         return jnp.concatenate(res[0], axis=-3), jnp.concatenate(res[1], axis=-3)
     else:
         return jnp.concatenate(res, axis=-3)

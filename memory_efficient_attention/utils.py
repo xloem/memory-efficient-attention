@@ -18,8 +18,17 @@ def scan(f, init, xs, length=None):
     if xs is None:
         xs = [None] * length
     carry = init
-    ys = []
-    for x in xs:
-        carry, y = f(carry, x)
-        ys.append(y)
-    return carry, torch.stack(ys)
+    carry, y = f(carry, xs[0])
+    if type(y) is tuple:
+        ys = tuple(([y_] for y_ in y))
+        for x in xs[1:]:
+            carry, y = f(carry, x)
+            for ys_, y_ in zip(ys, y):
+                ys_.append(y_)
+        return carry, tuple((torch.stack(ys_) for ys_ in ys))
+    else:
+        ys = [y]
+        for x in xs[1:]:
+            carry, y = f(carry, x)
+            ys.append(y)
+        return carry, torch.stack(ys)
