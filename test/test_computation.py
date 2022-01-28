@@ -53,7 +53,7 @@ class ComputationTest(unittest.TestCase):
     @staticmethod
     def calc_jax(data, return_weights=False):
         Qb, Kb, Vb, Mb, Bb = data
-        out = efficient_dot_product_attention_jax(Qb, Kb, Vb, Mb, Bb)
+        out = efficient_dot_product_attention_jax(Qb, Kb, Vb, Mb, Bb, return_weights=return_weights)
         if return_weights:
             return np.asarray(out[0]), np.asarray(out[1])
         else:

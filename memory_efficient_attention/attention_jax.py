@@ -5,7 +5,7 @@ import math
 from jax import numpy as jnp
 
 
-def _query_chunk_attention(query, key, value, mask, bias, precision, key_chunk_size=4096, weights_out=None):
+def _query_chunk_attention(query, key, value, mask, bias, precision, key_chunk_size=4096, return_attentions=False):
     num_kv, num_heads, k_features = key.shape[-3:]
     v_features = value.shape[-1]
     num_q = query.shape[-3]
@@ -13,7 +13,7 @@ def _query_chunk_attention(query, key, value, mask, bias, precision, key_chunk_s
     query = query / jnp.sqrt(k_features)
 
     @functools.partial(jax.checkpoint, prevent_cse=False)
-    def summarize_chunk(query, key, value, mask, bias, weights_out):
+    def summarize_chunk(query, key, value, mask, bias):
         attn_weights = jnp.einsum('...qhd,...khd->...qhk', query, key, precision=precision)
         if bias is not None:
             bias = jnp.einsum('...hqk->...qhk', bias)
@@ -22,14 +22,15 @@ def _query_chunk_attention(query, key, value, mask, bias, precision, key_chunk_s
             big_neg = jnp.finfo(attn_weights.dtype).min
             mask = jnp.einsum('...hqk->...qhk', mask)
             attn_weights = jnp.where(mask, attn_weights, big_neg)
-        if weights_out is not None:
-            weights_out[:] = jax.lax.stop_gradient(attn_weights)
+        #if weights_out is not None:
+        #    weights_out[:] = jax.lax.stop_gradient(attn_weights)
         max_score = jnp.max(attn_weights, axis=-1, keepdims=True)
         max_score = jax.lax.stop_gradient(max_score)
         exp_weights = jnp.exp(attn_weights - max_score)
+        attn_weights = jax.lax.stop_gradient(attn_weights)
         exp_values = jnp.einsum('...vhf,...qhv->...qhf', value, exp_weights, precision=precision)
         max_score = jnp.einsum('...qhk->...qh', max_score)
-        return exp_values, exp_weights.sum(axis=-1), max_score
+        return exp_values, exp_weights.sum(axis=-1), attn_weights, max_score
 
     def chunk_scanner(chunk_idx):
         key_chunk = jax.lax.dynamic_slice(
@@ -50,15 +51,15 @@ def _query_chunk_attention(query, key, value, mask, bias, precision, key_chunk_s
                 slice_sizes=tuple(mask.shape[:-3]) + (num_heads, num_q, key_chunk_size))
         else:
             mask_chunk = None
-        if weights_out is not None:
-            weights_chunk = jax.lax.dynamic_slice(
-                weights_out, tuple([0] * (weights_out.ndim - 3)) + (0, 0, chunk_idx),
-                slice_sizes=tuple(weights_out.shape[:-3]) + (num_q, num_heads, key_chunk_size))
-        else:
-            weights_chunk = None
-        return summarize_chunk(query, key_chunk, value_chunk, mask_chunk, bias_chunk, weights_chunk)
+        #if weights_out is not None:
+        #    weights_chunk = jax.lax.dynamic_slice(
+        #        weights_out, tuple([0] * (weights_out.ndim - 3)) + (0, 0, chunk_idx),
+        #        slice_sizes=tuple(weights_out.shape[:-3]) + (num_q, num_heads, key_chunk_size))
+        #else:
+        #    weights_chunk = None
+        return summarize_chunk(query, key_chunk, value_chunk, mask_chunk, bias_chunk)
 
-    chunk_values, chunk_weights, chunk_max = jax.lax.map(
+    chunk_values, chunk_weights, chunk_attentions, chunk_max = jax.lax.map(
         chunk_scanner, xs=jnp.arange(0, num_kv, key_chunk_size))
 
     global_max = jnp.max(chunk_max, axis=0, keepdims=True)
@@ -68,7 +69,11 @@ def _query_chunk_attention(query, key, value, mask, bias, precision, key_chunk_s
 
     all_values = chunk_values.sum(axis=0)
     all_weights = jnp.expand_dims(chunk_weights, -1).sum(axis=0)
-    return all_values / all_weights
+    if return_attentions:
+        all_attentions = jnp.concatenate(chunk_attentions, axis=-1)
+    else:
+        all_attentions = None
+    return all_values / all_weights, all_attentions
 
 
 def efficient_dot_product_attention(query, key, value,
@@ -109,9 +114,11 @@ def efficient_dot_product_attention(query, key, value,
     num_kv = key.shape[-3]
 
     if return_weights:
-        weights = jnp.empty((*value.shape[:-3], num_q, num_heads, num_kv))
+        attentions = []
+    #    weights = jnp.empty((*value.shape[:-3], num_q, num_heads, num_kv))
     else:
-        weights = None
+    #    weights = None
+        attentions = None
 
     def chunk_scanner(chunk_idx, _):
         query_chunk = jax.lax.dynamic_slice(
@@ -129,19 +136,23 @@ def efficient_dot_product_attention(query, key, value,
                 slice_sizes=tuple(bias.shape[:-3]) + (num_heads, min(query_chunk_size, num_q), num_kv))
         else:
             bias_chunk = None
-        if weights is not None:
-            weights_chunk = jax.lax.dynamic_slice(
-                weights, tuple([0] * (weights.ndim - 3)) + (chunk_idx, 0, 0),
-                slice_sizes=tuple(weights.shape[:-3]) + (min(query_chunk_size, num_q), num_heads, num_kv))
-        else:
-            weights_chunk = None
-        return (chunk_idx + query_chunk_size,
-                _query_chunk_attention(query_chunk, key, value, mask_chunk, bias_chunk,
-                                       precision=precision, key_chunk_size=key_chunk_size, weights_out=weights_chunk))
+        #if weights is not None:
+        #    weights_chunk = jax.lax.dynamic_slice(
+        #        weights, tuple([0] * (weights.ndim - 3)) + (chunk_idx, 0, 0),
+        #        slice_sizes=tuple(weights.shape[:-3]) + (min(query_chunk_size, num_q), num_heads, num_kv))
+        #else:
+        #    weights_chunk = None
+
+        out, attn_chunk = _query_chunk_attention(query_chunk, key, value, mask_chunk, bias_chunk,
+                                                 precision=precision, key_chunk_size=key_chunk_size, return_attentions=return_weights)
+        if return_weights:
+            out = (out, attn_chunk)
+
+        return (chunk_idx + query_chunk_size, out)
 
     _, res = jax.lax.scan(
         chunk_scanner, init=0, xs=None, length=math.ceil(num_q / query_chunk_size))
     if return_weights:
-        return jnp.concatenate(res, axis=-3), weights
+        return jnp.concatenate(res[0], axis=-3), jnp.concatenate(res[1], axis=-3)
     else:
         return jnp.concatenate(res, axis=-3)
