@@ -24,10 +24,9 @@ def _query_chunk_attention(query, key, value, mask, bias, key_chunk_size=4096, r
         max_score, _ = torch.max(attn_weights, -1, keepdim=True)
         max_score = max_score.detach()
         exp_weights = torch.exp(attn_weights - max_score)
-        attn_weights  = attn_weights.detach()
         exp_values = torch.einsum('...vhf,...qhv->...qhf', value, exp_weights)
         max_score = torch.einsum('...qhk->...qh', max_score)
-        return exp_values, exp_weights.sum(dim=-1), attn_weights, max_score
+        return exp_values, exp_weights, exp_weights.sum(dim=-1), max_score
 
     def chunk_scanner(chunk_idx):
         key_chunk = dynamic_slice(key, tuple([0] * (key.ndim - 3)) + (chunk_idx, 0, 0),
@@ -46,7 +45,7 @@ def _query_chunk_attention(query, key, value, mask, bias, key_chunk_size=4096, r
             mask_chunk = None
         return checkpoint(summarize_chunk, query, key_chunk, value_chunk, mask_chunk, bias_chunk)
 
-    chunk_values, chunk_weights, chunk_attentions, chunk_max = map_pt(
+    chunk_values, chunk_attentions, chunk_weights, chunk_max = map_pt(
         chunk_scanner, xs=torch.arange(0, num_kv, key_chunk_size))
 
     global_max, _ = torch.max(chunk_max, 0, keepdim=True)
@@ -57,7 +56,7 @@ def _query_chunk_attention(query, key, value, mask, bias, key_chunk_size=4096, r
     all_values = chunk_values.sum(dim=0)
     all_weights = torch.unsqueeze(chunk_weights, -1).sum(dim=0)
     if return_attentions:
-        all_attentions = torch.cat(tuple(chunk_attentions), dim=-1)
+        all_attentions = torch.cat(tuple(chunk_attentions), dim=-1) / all_weights
     else:
         all_attentions = None
     return all_values / all_weights, all_attentions
@@ -90,7 +89,7 @@ def efficient_dot_product_attention(query, key, value,
           is `False`.
         query_chunk_size: int: query chunks size
         key_chunk_size: int: key chunks size
-        return_attentions: If specified, a tuple of (output, attentions) will be returned.
+        return_attentions: If specified, a tuple of (output, weights) will be returned.
       Returns:
         Output of shape `[batch..., q_length, num_heads, v_depth_per_head]`.
       """

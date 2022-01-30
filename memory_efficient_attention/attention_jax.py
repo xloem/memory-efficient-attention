@@ -25,10 +25,9 @@ def _query_chunk_attention(query, key, value, mask, bias, precision, key_chunk_s
         max_score = jnp.max(attn_weights, axis=-1, keepdims=True)
         max_score = jax.lax.stop_gradient(max_score)
         exp_weights = jnp.exp(attn_weights - max_score)
-        attn_weights = jax.lax.stop_gradient(attn_weights)
         exp_values = jnp.einsum('...vhf,...qhv->...qhf', value, exp_weights, precision=precision)
         max_score = jnp.einsum('...qhk->...qh', max_score)
-        return exp_values, exp_weights.sum(axis=-1), attn_weights, max_score
+        return exp_values, exp_weights, exp_weights.sum(axis=-1), max_score
 
     def chunk_scanner(chunk_idx):
         key_chunk = jax.lax.dynamic_slice(
@@ -51,7 +50,7 @@ def _query_chunk_attention(query, key, value, mask, bias, precision, key_chunk_s
             mask_chunk = None
         return summarize_chunk(query, key_chunk, value_chunk, mask_chunk, bias_chunk)
 
-    chunk_values, chunk_weights, chunk_attentions, chunk_max = jax.lax.map(
+    chunk_values, chunk_attentions, chunk_weights, chunk_max = jax.lax.map(
         chunk_scanner, xs=jnp.arange(0, num_kv, key_chunk_size))
 
     global_max = jnp.max(chunk_max, axis=0, keepdims=True)
@@ -62,7 +61,7 @@ def _query_chunk_attention(query, key, value, mask, bias, precision, key_chunk_s
     all_values = chunk_values.sum(axis=0)
     all_weights = jnp.expand_dims(chunk_weights, -1).sum(axis=0)
     if return_attentions:
-        all_attentions = jnp.concatenate(chunk_attentions, axis=-1)
+        all_attentions = jnp.concatenate(chunk_attentions, axis=-1) / all_weights
     else:
         all_attentions = None
     return all_values / all_weights, all_attentions
@@ -98,7 +97,7 @@ def efficient_dot_product_attention(query, key, value,
         key_chunk_size: int: key chunks size
         precision: numerical precision of the computation see `jax.lax.Precision`
                 for details.
-        return_attentions: If specified, a tuple of (output, attentions) will be returned.
+        return_attentions: If specified, a tuple of (output, weights) will be returned.
       Returns:
         Output of shape `[batch..., q_length, num_heads, v_depth_per_head]`.
       """

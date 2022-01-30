@@ -19,7 +19,7 @@ def dot_product_attention_ex(query, key, value, bias, mask, return_attentions=Fa
         attns = jnp.where(mask, attns, big_neg)
     exp_attns = jax.nn.softmax(attns, axis=-1)
     if return_attentions:
-        return jnp.einsum('...vhf,...qhv->...qhf', value, exp_attns), attns
+        return jnp.einsum('...vhf,...qhv->...qhf', value, exp_attns), exp_attns
     else:
         return jnp.einsum('...vhf,...qhv->...qhf', value, exp_attns)
 
