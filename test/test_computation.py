@@ -12,9 +12,25 @@ class ComputationTest(unittest.TestCase):
         Qb = np.random.rand(1, b, 128, 16, 8).astype("float32")
         Kb = np.random.rand(1, b, 128, 16, 8).astype("float32")
         Vb = np.random.rand(1, b, 128, 16, 8).astype("float32")
-        Mb = np.random.rand(1, b, 1, 1, 128) > 0.5
-        Bb = np.random.rand(1, b, 1, 128, 1).astype("float32") / 100
+        Mb = np.random.rand(1, b, 128, 16, 128) > 0.5
+        Bb = np.random.rand(1, b, 128, 16, 128).astype("float32") / 100
         return Qb, Kb, Vb, Mb, Bb
+
+    @staticmethod
+    def datasets():
+        # plain data
+        Qb, Kb, Vb, Mb, Bb = ComputationTest.data()
+
+        def MBchunker(tensor):
+            def get_range(query_start, query_size, key_start, key_size):
+                return tensor[:,:,query_start:query_start+query_size,:,key_start:key_start+key_size]
+            return get_range
+
+        # mask broadcasting
+        for Mb_variant in (Mb, Mb[:,:,0,:,:], Mb[:,:,:,0,:], Mb[:,:,:,:,0], MBchunker(Mb)):
+            # bias broadcasting
+            for Bb_variant in (Bb, Bb[:,:,0,:,:], Bb[:,:,:,0,:], Bb[:,:,:,:,0], MBchunker(Bb)):
+                yield Qb, Kb, Vb, Mb_variant, Bb_variant
 
     @staticmethod
     def calc_pt(data):
@@ -37,25 +53,25 @@ class ComputationTest(unittest.TestCase):
         return np.asarray(dot_product_attention(Qb, Kb, Vb, Bb, Mb))
 
     def test_pt(self):
-        data = ComputationTest.data()
-        res_pt = ComputationTest.calc_pt(data)
-        res_flax = ComputationTest.calc_flax(data)
-        self.assertTrue(np.allclose(res_pt, res_flax))
+        for data in ComputationTest.datasets():
+            res_pt = ComputationTest.calc_pt(data)
+            res_flax = ComputationTest.calc_flax(data)
+            self.assertTrue(np.allclose(res_pt, res_flax))
 
     def test_jax(self):
-        data = ComputationTest.data()
-        res_jax = ComputationTest.calc_jax(data)
-        res_flax = ComputationTest.calc_flax(data)
-        self.assertTrue(np.allclose(res_jax, res_flax))
+        for data in ComputationTest.datasets():
+            res_jax = ComputationTest.calc_jax(data)
+            res_flax = ComputationTest.calc_flax(data)
+            self.assertTrue(np.allclose(res_jax, res_flax))
 
     def test_jax_and_pt(self):
-        data = ComputationTest.data()
-        res_pt = ComputationTest.calc_pt(data)
-        res_jax = ComputationTest.calc_jax(data)
-        res_flax = ComputationTest.calc_flax(data)
-        self.assertTrue(np.allclose(res_pt, res_jax))
-        self.assertTrue(np.allclose(res_pt, res_flax))
-        self.assertTrue(np.allclose(res_jax, res_flax))
+        for data in ComputationTest.datasets():
+            res_pt = ComputationTest.calc_pt(data)
+            res_jax = ComputationTest.calc_jax(data)
+            res_flax = ComputationTest.calc_flax(data)
+            self.assertTrue(np.allclose(res_pt, res_jax))
+            self.assertTrue(np.allclose(res_pt, res_flax))
+            self.assertTrue(np.allclose(res_jax, res_flax))
 
 
 if __name__ == '__main__':

@@ -5,7 +5,7 @@ import math
 from jax import numpy as jnp
 
 
-def _query_chunk_attention(query, key, value, mask, bias, precision, key_chunk_size=4096):
+def _query_chunk_attention(query_idx, query, key, value, mask, bias, precision, key_chunk_size=4096):
     num_kv, num_heads, k_features = key.shape[-3:]
     v_features = value.shape[-1]
     num_q = query.shape[-3]
@@ -37,7 +37,9 @@ def _query_chunk_attention(query, key, value, mask, bias, precision, key_chunk_s
             value, tuple([0] * (value.ndim - 3)) + (chunk_idx, 0, 0),
             slice_sizes=tuple(value.shape[:-3]) + (key_chunk_size, num_heads, v_features))
         if bias is not None:
-            if bias.shape[-1] > 1:
+            if callable(bias):
+                bias_chunk = bias(query_idx, num_q, chunk_idx, key_chunk_size)
+            elif bias.shape[-1] > 1:
                 bias_chunk = jax.lax.dynamic_slice(
                     bias, tuple([0] * (bias.ndim - 3)) + (0, 0, chunk_idx),
                     slice_sizes=tuple(bias.shape[:-3]) + (bias.shape[-3], bias.shape[-2], key_chunk_size))
@@ -46,7 +48,9 @@ def _query_chunk_attention(query, key, value, mask, bias, precision, key_chunk_s
         else:
             bias_chunk = None
         if mask is not None:
-            if mask.shape[-1] > 1:
+            if callable(mask):
+                mask_chunk = mask(query_idx, num_q, chunk_idx, key_chunk_size)
+            elif mask.shape[-1] > 1:
                 mask_chunk = jax.lax.dynamic_slice(
                     mask, tuple([0] * (mask.ndim - 3)) + (0, 0, chunk_idx),
                     slice_sizes=tuple(mask.shape[:-3]) + (mask.shape[-3], mask.shape[-2], key_chunk_size))
@@ -109,7 +113,7 @@ def efficient_dot_product_attention(query, key, value,
             query, tuple([0] * (query.ndim - 3)) + (chunk_idx, 0, 0),
             slice_sizes=tuple(query.shape[:-3]) + (min(query_chunk_size, num_q), num_heads, q_features))
         if mask is not None:
-            if mask.shape[-2] > 1:
+            if not callable(mask) and mask.shape[-2] > 1:
                 mask_chunk = jax.lax.dynamic_slice(
                     mask, tuple([0] * (mask.ndim - 3)) + (0, chunk_idx, 0),
                     slice_sizes=tuple(mask.shape[:-3]) + (mask.shape[-3], min(query_chunk_size, num_q), mask.shape[-1]))
@@ -118,7 +122,7 @@ def efficient_dot_product_attention(query, key, value,
         else:
             mask_chunk = None
         if bias is not None:
-            if bias.shape[-2] > 1:
+            if not callable(bias) and bias.shape[-2] > 1:
                 bias_chunk = jax.lax.dynamic_slice(
                     bias, tuple([0] * (bias.ndim - 3)) + (0, chunk_idx, 0),
                     slice_sizes=tuple(bias.shape[:-3]) + (bias.shape[-3], min(query_chunk_size, num_q), bias.shape[-1]))
@@ -127,7 +131,7 @@ def efficient_dot_product_attention(query, key, value,
         else:
             bias_chunk = None
         return (chunk_idx + query_chunk_size,
-                _query_chunk_attention(query_chunk, key, value, mask_chunk, bias_chunk,
+                _query_chunk_attention(chunk_idx, query_chunk, key, value, mask_chunk, bias_chunk,
                                        precision=precision, key_chunk_size=key_chunk_size))
 
     _, res = jax.lax.scan(
