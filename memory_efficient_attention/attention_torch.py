@@ -4,14 +4,14 @@ from .utils import dynamic_slice, map_pt, scan
 import math
 
 
-def _query_chunk_attention(query_idx, query, key, value, mask, bias, key_chunk_size=4096):
+def _query_chunk_attention(query_idx, query, key, value, mask, bias, key_chunk_size=4096, chunk_callback=None, callback_pure_data=None):
     num_kv, num_heads, k_features = key.shape[-3:]
     v_features = value.shape[-1]
     num_q = query.shape[-3]
     key_chunk_size = min(key_chunk_size, num_kv)
     query = query / math.sqrt(k_features)
 
-    def summarize_chunk(query, key, value, mask, bias):
+    def summarize_chunk(key_idx, query, key, value, mask, bias):
         attn_weights = torch.einsum('...qhd,...khd->...qhk', query, key)
         if bias is not None:
             bias = torch.einsum('...hqk->...qhk', bias)
@@ -21,6 +21,8 @@ def _query_chunk_attention(query_idx, query, key, value, mask, bias, key_chunk_s
             big_neg = torch.tensor(big_neg, dtype=torch.float32)
             mask = torch.einsum('...hqk->...qhk', mask)
             attn_weights = torch.where(mask, attn_weights, big_neg)
+        if chunk_callback is not None:
+            attn_weights = chunk_callback(query_idx, key_idx, attn_weights, callback_pure_data)
         max_score, _ = torch.max(attn_weights, -1, keepdim=True)
         max_score = max_score.detach()
         exp_weights = torch.exp(attn_weights - max_score)
@@ -34,9 +36,7 @@ def _query_chunk_attention(query_idx, query, key, value, mask, bias, key_chunk_s
         value_chunk = dynamic_slice(value, tuple([0] * (value.ndim - 3)) + (chunk_idx, 0, 0),
                                     tuple(value.shape[:-3]) + (key_chunk_size, num_heads, v_features))
         if bias is not None:
-            if callable(bias):
-                bias_chunk = bias(query_idx, num_q, chunk_idx, key_chunk_size)
-            elif bias.shape[-1] > 1:
+            if bias.shape[-1] > 1:
                 bias_chunk = dynamic_slice(bias, tuple([0] * (bias.ndim - 3)) + (0, 0, chunk_idx),
                                            tuple(bias.shape[:-3]) + (bias.shape[-3], bias.shape[-2], key_chunk_size))
             else:
@@ -44,16 +44,14 @@ def _query_chunk_attention(query_idx, query, key, value, mask, bias, key_chunk_s
         else:
             bias_chunk = None
         if mask is not None:
-            if callable(mask):
-                mask_chunk = mask(query_idx, num_q, chunk_idx, key_chunk_size)
-            elif mask.shape[-1] > 1:
+            if mask.shape[-1] > 1:
                 mask_chunk = dynamic_slice(mask, tuple([0] * (mask.ndim - 3)) + (0, 0, chunk_idx),
                                            tuple(mask.shape[:-3]) + (mask.shape[-3], mask.shape[-2], key_chunk_size))
             else:
                 mask_chunk = mask
         else:
             mask_chunk = None
-        return checkpoint(summarize_chunk, query, key_chunk, value_chunk, mask_chunk, bias_chunk)
+        return checkpoint(summarize_chunk, chunk_idx, query, key_chunk, value_chunk, mask_chunk, bias_chunk)
 
     chunk_values, chunk_weights, chunk_max = map_pt(
         chunk_scanner, xs=torch.arange(0, num_kv, key_chunk_size))
@@ -71,7 +69,9 @@ def _query_chunk_attention(query_idx, query, key, value, mask, bias, key_chunk_s
 def efficient_dot_product_attention(query, key, value,
                                     mask=None, bias=None,
                                     query_chunk_size=1024,
-                                    key_chunk_size=4096):
+                                    key_chunk_size=4096,
+                                    chunk_callback=None,
+                                    callback_pure_data=None):
     """Computes efficient dot-product attention given query, key, and value.
       This is efficient version of attention presented in
       https://arxiv.org/abs/2112.05682v2 which comes with O(sqrt(n)) memory requirements.
@@ -94,6 +94,10 @@ def efficient_dot_product_attention(query, key, value,
           is `False`.
         query_chunk_size: int: query chunks size
         key_chunk_size: int: key chunks size
+        chunk_callback: a callback for each chunk.
+            This should take (query_offset, key_offset, attn_weights, pure_data)
+            and return a mutated attn_weights tensor to be passed to softmax.
+        callback_pure_data: data to pass to the callback pure_data parameter
       Returns:
         Output of shape `[batch..., q_length, num_heads, v_depth_per_head]`.
       """
@@ -105,7 +109,7 @@ def efficient_dot_product_attention(query, key, value,
         query_chunk = dynamic_slice(query, tuple([0] * (query.ndim - 3)) + (chunk_idx, 0, 0),
                                     tuple(query.shape[:-3]) + (min(query_chunk_size, num_q), num_heads, q_features))
         if mask is not None:
-            if not callable(mask) and mask.shape[-2] > 1:
+            if mask.shape[-2] > 1:
                 mask_chunk = dynamic_slice(mask, tuple([0] * (mask.ndim - 3)) + (0, chunk_idx, 0),
                                            tuple(mask.shape[:-3]) + (mask.shape[-3], min(query_chunk_size, num_q), mask.shape[-1]))
             else:
@@ -113,7 +117,7 @@ def efficient_dot_product_attention(query, key, value,
         else:
             mask_chunk = None
         if bias is not None:
-            if not callable(bias) and bias.shape[-2] > 1:
+            if bias.shape[-2] > 1:
                 bias_chunk = dynamic_slice(bias, tuple([0] * (bias.ndim - 3)) + (0, chunk_idx, 0),
                                            tuple(bias.shape[:-3]) + (bias.shape[-3], min(query_chunk_size, num_q), bias.shape[-1]))
             else:
@@ -121,7 +125,8 @@ def efficient_dot_product_attention(query, key, value,
         else:
             bias_chunk = None
         return (chunk_idx + query_chunk_size,
-                _query_chunk_attention(chunk_idx, query_chunk, key, value, mask_chunk, bias_chunk, key_chunk_size=key_chunk_size))
+                _query_chunk_attention(chunk_idx, query_chunk, key, value, mask_chunk, bias_chunk, key_chunk_size=key_chunk_size,
+                                       chunk_callback=chunk_callback, callback_pure_data=callback_pure_data))
 
     _, res = scan(chunk_scanner, init=0, xs=None, length=math.ceil(num_q / query_chunk_size))
     rl = [res[i] for i in range(res.shape[0])]
