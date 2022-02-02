@@ -34,13 +34,19 @@ def _query_chunk_attention(query, key, value, mask, bias, key_chunk_size=4096):
         value_chunk = dynamic_slice(value, tuple([0] * (value.ndim - 3)) + (chunk_idx, 0, 0),
                                     tuple(value.shape[:-3]) + (key_chunk_size, num_heads, v_features))
         if bias is not None:
-            bias_chunk = dynamic_slice(bias, tuple([0] * (bias.ndim - 3)) + (0, 0, chunk_idx),
-                                       tuple(bias.shape[:-3]) + (num_heads, num_q, key_chunk_size))
+            if bias.shape[-1] > 1:
+                bias_chunk = dynamic_slice(bias, tuple([0] * (bias.ndim - 3)) + (0, 0, chunk_idx),
+                                           tuple(bias.shape[:-3]) + (bias.shape[-3], bias.shape[-2], key_chunk_size))
+            else:
+                bias_chunk = bias
         else:
             bias_chunk = None
         if mask is not None:
-            mask_chunk = dynamic_slice(mask, tuple([0] * (mask.ndim - 3)) + (0, 0, chunk_idx),
-                                       tuple(mask.shape[:-3]) + (num_heads, num_q, key_chunk_size))
+            if mask.shape[-1] > 1:
+                mask_chunk = dynamic_slice(mask, tuple([0] * (mask.ndim - 3)) + (0, 0, chunk_idx),
+                                           tuple(mask.shape[:-3]) + (mask.shape[-3], mask.shape[-2], key_chunk_size))
+            else:
+                mask_chunk = mask
         else:
             mask_chunk = None
         return checkpoint(summarize_chunk, query, key_chunk, value_chunk, mask_chunk, bias_chunk)
@@ -95,13 +101,19 @@ def efficient_dot_product_attention(query, key, value,
         query_chunk = dynamic_slice(query, tuple([0] * (query.ndim - 3)) + (chunk_idx, 0, 0),
                                     tuple(query.shape[:-3]) + (min(query_chunk_size, num_q), num_heads, q_features))
         if mask is not None:
-            mask_chunk = dynamic_slice(mask, tuple([0] * (mask.ndim - 3)) + (0, chunk_idx, 0),
-                                       tuple(mask.shape[:-3]) + (num_heads, min(query_chunk_size, num_q), num_kv))
+            if mask.shape[-2] > 1:
+                mask_chunk = dynamic_slice(mask, tuple([0] * (mask.ndim - 3)) + (0, chunk_idx, 0),
+                                           tuple(mask.shape[:-3]) + (mask.shape[-3], min(query_chunk_size, num_q), mask.shape[-1]))
+            else:
+                mask_chunk = mask
         else:
             mask_chunk = None
         if bias is not None:
-            bias_chunk = dynamic_slice(bias, tuple([0] * (bias.ndim - 3)) + (0, chunk_idx, 0),
-                                       tuple(bias.shape[:-3]) + (num_heads, min(query_chunk_size, num_q), num_kv))
+            if bias.shape[-2] > 1:
+                bias_chunk = dynamic_slice(bias, tuple([0] * (bias.ndim - 3)) + (0, chunk_idx, 0),
+                                           tuple(bias.shape[:-3]) + (bias.shape[-3], min(query_chunk_size, num_q), bias.shape[-1]))
+            else:
+                bias_chunk = bias
         else:
             bias_chunk = None
         return (chunk_idx + query_chunk_size,

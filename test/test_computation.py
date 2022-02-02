@@ -12,8 +12,8 @@ class ComputationTest(unittest.TestCase):
         Qb = np.random.rand(1, b, 128, 16, 8).astype("float32")
         Kb = np.random.rand(1, b, 128, 16, 8).astype("float32")
         Vb = np.random.rand(1, b, 128, 16, 8).astype("float32")
-        Mb = np.random.rand(1, b, 16, 128, 128) > 0.5
-        Bb = np.random.rand(1, b, 16, 128, 128).astype("float32") / 100
+        Mb = np.random.rand(1, b, 1, 1, 128) > 0.5
+        Bb = np.random.rand(1, b, 1, 128, 1).astype("float32") / 100
         return Qb, Kb, Vb, Mb, Bb
 
     @staticmethod
