@@ -5,7 +5,7 @@ from memory_efficient_attention import efficient_dot_product_attention_pt, effic
 from flax.linen.attention import dot_product_attention
 from memory_efficient_attention.utils import dynamic_slice
 
-efficient_dot_product_attention_jax = jax.jit(efficient_dot_product_attention_jax, static_argnames=('chunk_callback'))
+efficient_dot_product_attention_jax = jax.jit(efficient_dot_product_attention_jax, static_argnames=('weights_calc_fn'))
 
 class ComputationTest(unittest.TestCase):
     @staticmethod
@@ -18,8 +18,8 @@ class ComputationTest(unittest.TestCase):
         Mb = jax.random.uniform(key, (1, b, 16, 128, 128)) > 0.5
         Bb = jax.random.uniform(key, (1, b, 16, 128, 128), dtype=jnp.float32) / 100
 
-        # callback bias & mask
-        def callback_biasmax_jax(query_offset, key_offset, attn_weights, MbBb):
+        # calc_fn bias & mask
+        def biasmax_fn_jax(query_offset, key_offset, attn_weights, MbBb):
             Mb, Bb = MbBb
 
             bias = jax.lax.dynamic_slice(Bb, tuple([0] * (Bb.ndim - 2)) + (query_offset, key_offset),
@@ -34,7 +34,7 @@ class ComputationTest(unittest.TestCase):
             attn_weights = jnp.where(mask, attn_weights, big_neg)
 
             return attn_weights
-        def callback_biasmax_torch(query_offset, key_offset, attn_weights, MbBb):
+        def biasmax_fn_torch(query_offset, key_offset, attn_weights, MbBb):
             Mb, Bb = MbBb
 
             bias = dynamic_slice(torch.tensor(Bb.to_py()), tuple([0] * (Bb.ndim - 2)) + (query_offset, key_offset),
@@ -57,7 +57,7 @@ class ComputationTest(unittest.TestCase):
             # full mask and bias, negates memory savings
             (Qb, Kb, Vb, Mb, Bb, dict(), None),
             # mask and bias generated per-chunk by a callback
-            (Qb, Kb, Vb, Mb, Bb, dict(torch=callback_biasmax_torch, jax=callback_biasmax_jax), (Mb, Bb)),
+            (Qb, Kb, Vb, Mb, Bb, dict(torch=biasmax_fn_torch, jax=biasmax_fn_jax), (Mb, Bb)),
             # no mask nor bias
             (Qb, Kb, Vb, None, None, dict(), None),
         ]
@@ -77,7 +77,7 @@ class ComputationTest(unittest.TestCase):
             if Bb is not None:
                 Bbt = torch.tensor(Bb.to_py(), requires_grad=True)
         return efficient_dot_product_attention_pt(Qbt, Kbt, Vbt, Mbt, Bbt,
-                                                  chunk_callback=Cf, callback_pure_data=Pd).detach().numpy()
+                                                  weights_calc_fn=Cf, weights_calc_data=Pd).detach().numpy()
 
     @staticmethod
     def calc_jax(data):
@@ -87,7 +87,7 @@ class ComputationTest(unittest.TestCase):
             Mb = None
             Bb = None
         return jnp.asarray(efficient_dot_product_attention_jax(Qb, Kb, Vb, Mb, Bb,
-                                                               chunk_callback=Cf, callback_pure_data=Pd))
+                                                               weights_calc_fn=Cf, weights_calc_data=Pd))
 
     @staticmethod
     def calc_flax(data):

@@ -5,7 +5,7 @@ import math
 from jax import numpy as jnp
 
 
-def _query_chunk_attention(query_idx, query, key, value, mask, bias, precision, key_chunk_size=4096, chunk_callback=None, callback_pure_data=None):
+def _query_chunk_attention(query_idx, query, key, value, mask, bias, precision, key_chunk_size=4096, weights_calc_fn=None, weights_calc_data=None):
     num_kv, num_heads, k_features = key.shape[-3:]
     v_features = value.shape[-1]
     num_q = query.shape[-3]
@@ -22,8 +22,8 @@ def _query_chunk_attention(query_idx, query, key, value, mask, bias, precision, 
             big_neg = jnp.finfo(attn_weights.dtype).min
             mask = jnp.einsum('...hqk->...qhk', mask)
             attn_weights = jnp.where(mask, attn_weights, big_neg)
-        if chunk_callback is not None:
-            attn_weights = chunk_callback(query_idx, chunk_idx, attn_weights, callback_pure_data)
+        if weights_calc_fn is not None:
+            attn_weights = weights_calc_fn(query_idx, chunk_idx, attn_weights, weights_calc_data)
         max_score = jnp.max(attn_weights, axis=-1, keepdims=True)
         max_score = jax.lax.stop_gradient(max_score)
         exp_weights = jnp.exp(attn_weights - max_score)
@@ -76,8 +76,8 @@ def efficient_dot_product_attention(query, key, value,
                                     precision=jax.lax.Precision.HIGHEST,
                                     query_chunk_size=1024,
                                     key_chunk_size=4096,
-                                    chunk_callback=None,
-                                    callback_pure_data=None):
+                                    weights_calc_fn=None,
+                                    weights_calc_data=None):
     """Computes efficient dot-product attention given query, key, and value.
       This is efficient version of attention presented in
       https://arxiv.org/abs/2112.05682v2 which comes with O(sqrt(n)) memory requirements.
@@ -100,10 +100,17 @@ def efficient_dot_product_attention(query, key, value,
           is `False`.
         query_chunk_size: int: query chunks size
         key_chunk_size: int: key chunks size
-        chunk_callback: a callback for each chunk.
-            This should take (query_offset, key_offset, attn_weights, pure_data)
-            and return a mutated attn_weights tensor to be passed to softmax.
-        callback_pure_data: data to pass to the callback pure_data parameter
+        weights_calc_fn: an attn_weights processing callback for each chunk.
+            This can replace or augment the mask or bias with arbitrary
+            processing. Note that in jax, the function must have no side effects
+            to repeat properly after compilation. The parameters passed will be
+            (query_offset, key_offset, attn_weights, pure_data) where attn_weights
+            has shape `[batch..., q_chunk_size, num_heads, k_chunk_size]`.
+            attn_weights will be a chunk of the query x key matrix product, after
+            scaling, masking, and bias, but prior to softmax. The return value
+            of weights_calc_fn will replace attn_weights. This provides for
+            implementing complex weights processing in a memory efficient way.
+        weights_calc_data: pure_data to pass with each call to weights_calc_fn
         precision: numerical precision of the computation see `jax.lax.Precision`
                 for details.
       Returns:
@@ -137,7 +144,7 @@ def efficient_dot_product_attention(query, key, value,
         return (chunk_idx + query_chunk_size,
                 _query_chunk_attention(chunk_idx, query_chunk, key, value, mask_chunk, bias_chunk,
                                        precision=precision, key_chunk_size=key_chunk_size,
-                                       chunk_callback=chunk_callback, callback_pure_data=callback_pure_data))
+                                       weights_calc_fn=weights_calc_fn, weights_calc_data=weights_calc_data))
 
     _, res = jax.lax.scan(
         chunk_scanner, init=0, xs=None, length=math.ceil(num_q / query_chunk_size))
