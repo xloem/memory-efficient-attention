@@ -17,18 +17,6 @@ class ComputationTest(unittest.TestCase):
         Vb = jax.random.uniform(key, (1, b, 128, 16, 8), dtype=jnp.float32)
         Mb = jax.random.uniform(key, (1, b, 16, 128, 128)) > 0.5
         Bb = jax.random.uniform(key, (1, b, 16, 128, 128), dtype=jnp.float32) / 100
-        return Qb, Kb, Vb, Mb, Bb
-
-    @staticmethod
-    def datasets():
-        # plain data
-        Qb, Kb, Vb, Mb, Bb = ComputationTest.data()
-
-        # mask broadcasting
-        for Mb_variant in (Mb, Mb[:,:,:1,:,:], Mb[:,:,:,:1,:], Mb[:,:,:,:,:1]):
-            # bias broadcasting
-            for Bb_variant in (Bb, Bb[:,:,:1,:,:], Bb[:,:,:,:1,:], Bb[:,:,:,:,:1]):
-                yield Qb, Kb, Vb, Mb_variant, Bb_variant, dict(), None
 
         # callback bias & mask
         def callback_biasmax_jax(query_offset, key_offset, attn_weights, MbBb):
@@ -46,7 +34,6 @@ class ComputationTest(unittest.TestCase):
             attn_weights = jnp.where(mask, attn_weights, big_neg)
 
             return attn_weights
-
         def callback_biasmax_torch(query_offset, key_offset, attn_weights, MbBb):
             Mb, Bb = MbBb
 
@@ -64,7 +51,16 @@ class ComputationTest(unittest.TestCase):
 
             return attn_weights
 
-        yield Qb, Kb, Vb, Mb, Bb, dict(torch=callback_biasmax_torch, jax=callback_biasmax_jax), (Mb, Bb)
+        return [
+            # broadcasting simple mask and bias
+            (Qb, Kb, Vb, Mb[:,:,:1,:1,:1], Bb[:,:,:1,:1,:1], dict(), None),
+            # full mask and bias, negates memory savings
+            (Qb, Kb, Vb, Mb, Bb, dict(), None),
+            # mask and bias generated per-chunk by a callback
+            (Qb, Kb, Vb, Mb, Bb, dict(torch=callback_biasmax_torch, jax=callback_biasmax_jax), (Mb, Bb)),
+            # no mask nor bias
+            (Qb, Kb, Vb, None, None, dict(), None),
+        ]
 
     @staticmethod
     def calc_pt(data):
@@ -73,12 +69,13 @@ class ComputationTest(unittest.TestCase):
         Kbt = torch.tensor(Kb.to_py(), requires_grad=True)
         Vbt = torch.tensor(Vb.to_py(), requires_grad=True)
         Cf = Cf.get('torch')
-        if Cf is not None:
-            Mbt = None
-            Bbt = None
-        else:
-            Mbt = torch.tensor(Mb.to_py(), requires_grad=False)
-            Bbt = torch.tensor(Bb.to_py(), requires_grad=True)
+        Mbt = None
+        Bbt = None
+        if Cf is None:
+            if Mb is not None:
+                Mbt = torch.tensor(Mb.to_py(), requires_grad=False)
+            if Bb is not None:
+                Bbt = torch.tensor(Bb.to_py(), requires_grad=True)
         return efficient_dot_product_attention_pt(Qbt, Kbt, Vbt, Mbt, Bbt,
                                                   chunk_callback=Cf, callback_pure_data=Pd).detach().numpy()
 
@@ -98,19 +95,19 @@ class ComputationTest(unittest.TestCase):
         return jnp.asarray(dot_product_attention(Qb, Kb, Vb, Bb, Mb))
 
     def test_pt(self):
-        for data in ComputationTest.datasets():
+        for data in ComputationTest.data():
             res_pt = ComputationTest.calc_pt(data)
             res_flax = ComputationTest.calc_flax(data)
             self.assertTrue(jnp.allclose(res_pt, res_flax))
 
     def test_jax(self):
-        for data in ComputationTest.datasets():
+        for data in ComputationTest.data():
             res_jax = ComputationTest.calc_jax(data)
             res_flax = ComputationTest.calc_flax(data)
             self.assertTrue(jnp.allclose(res_jax, res_flax))
 
     def test_jax_and_pt(self):
-        for data in ComputationTest.datasets():
+        for data in ComputationTest.data():
             res_pt = ComputationTest.calc_pt(data)
             res_jax = ComputationTest.calc_jax(data)
             res_flax = ComputationTest.calc_flax(data)
