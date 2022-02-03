@@ -23,7 +23,7 @@ def _query_chunk_attention(query_idx, query, key, value, mask, bias, precision, 
             mask = jnp.einsum('...hqk->...qhk', mask)
             attn_weights = jnp.where(mask, attn_weights, big_neg)
         if chunk_callback is not None:
-            attn_weights = chunk_callback(query_idx, key_idx, attn_weights, callback_pure_data)
+            attn_weights = chunk_callback(query_idx, chunk_idx, attn_weights, callback_pure_data)
         max_score = jnp.max(attn_weights, axis=-1, keepdims=True)
         max_score = jax.lax.stop_gradient(max_score)
         exp_weights = jnp.exp(attn_weights - max_score)

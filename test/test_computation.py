@@ -5,9 +5,7 @@ from memory_efficient_attention import efficient_dot_product_attention_pt, effic
 from flax.linen.attention import dot_product_attention
 from memory_efficient_attention.utils import dynamic_slice
 
-efficient_dot_product_attention_jax = jax.jit(efficient_dot_product_attention_jax, static_argnames=('callback'))
-
-#jax.config.update('jax_log_compiles', True)
+efficient_dot_product_attention_jax = jax.jit(efficient_dot_product_attention_jax, static_argnames=('chunk_callback'))
 
 class ComputationTest(unittest.TestCase):
     @staticmethod
@@ -34,13 +32,15 @@ class ComputationTest(unittest.TestCase):
 
         # callback bias & mask
         def callback_biasmax_jax(query_offset, key_offset, attn_weights, MbBb):
-            bias = jax.lax.dynamic_slice(MbBb[1], tuple([0] * (Bb.ndim - 2)) + (query_offset, key_offset),
-                slice_sizes=tuple(Bb.shape[:-2]) + tuple(attn_Weights.shape[-2:]))
+            Mb, Bb = MbBb
+
+            bias = jax.lax.dynamic_slice(Bb, tuple([0] * (Bb.ndim - 2)) + (query_offset, key_offset),
+                slice_sizes=tuple(Bb.shape[:-2]) + (attn_weights.shape[-3], attn_weights.shape[-1]))
             bias = jnp.einsum('...hqk->...qhk', bias)
             attn_weights = attn_weights + bias
 
-            mask = jax.lax.dynamic_slice(MbBb[0], tuple([0] * (Mb.ndim - 2)) + (query_offset, key_offset),
-                slice_sizes=tuple(Mb.shape[:-2]) + tuple(attn_weights.shape[-2:]))
+            mask = jax.lax.dynamic_slice(Mb, tuple([0] * (Mb.ndim - 2)) + (query_offset, key_offset),
+                slice_sizes=tuple(Mb.shape[:-2]) + (attn_weights.shape[-3], attn_weights.shape[-1]))
             big_neg = jnp.finfo(attn_weights.dtype).min
             mask = jnp.einsum('...hqk->...qhk', mask)
             attn_weights = jnp.where(mask, attn_weights, big_neg)
@@ -48,20 +48,23 @@ class ComputationTest(unittest.TestCase):
             return attn_weights
 
         def callback_biasmax_torch(query_offset, key_offset, attn_weights, MbBb):
-            bias = dynamic_slice(MbBb[1], tuple([0] * (Bb.ndim - 2)) + (query_offset, key_offset),
-                tuple(Bb.shape[:-2]) + tuple(attn_Weights.shape[-2:]))
+            Mb, Bb = MbBb
+
+            bias = dynamic_slice(torch.tensor(Bb.to_py()), tuple([0] * (Bb.ndim - 2)) + (query_offset, key_offset),
+                tuple(Bb.shape[:-2]) + (attn_weights.shape[-3], attn_weights.shape[-1]))
             bias = torch.einsum('...hqk->...qhk', bias)
             attn_weights = attn_weights + bias
 
-            mask = dynamic_slice(MbBb[0], tuple([0] * (Mb.ndim - 2)) + (query_offset, key_offset),
-                slice_sizes=tuple(Mb.shape[:-2]) + tuple(attn_weights.shape[-2:]))
+            mask = dynamic_slice(torch.tensor(Mb.to_py()), tuple([0] * (Mb.ndim - 2)) + (query_offset, key_offset),
+                tuple(Mb.shape[:-2]) + (attn_weights.shape[-3], attn_weights.shape[-1]))
             big_neg = torch.finfo(attn_weights.dtype).min
             big_neg = torch.tensor(big_neg, dtype=torch.float32)
             mask = torch.einsum('...hqk->...qhk', mask)
             attn_weights = torch.where(mask, attn_weights, big_neg)
 
             return attn_weights
-            yield Qb, Kb, Vb, Mb, Bb, dict(torch=callback_biasmax_torch, jax=callback_biasmax_jax), (Mb, Bb)
+
+        yield Qb, Kb, Vb, Mb, Bb, dict(torch=callback_biasmax_torch, jax=callback_biasmax_jax), (Mb, Bb)
 
     @staticmethod
     def calc_pt(data):
