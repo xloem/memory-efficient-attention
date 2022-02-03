@@ -7,18 +7,18 @@ from memory_efficient_attention.utils import dynamic_slice
 
 efficient_dot_product_attention_jax = jax.jit(efficient_dot_product_attention_jax, static_argnames=('callback'))
 
-jax.config.update('jax_log_compiles', True)
+#jax.config.update('jax_log_compiles', True)
 
 class ComputationTest(unittest.TestCase):
     @staticmethod
     def data():
         b = 8
         key = jax.random.PRNGKey(0)
-        Qb = jax.random.normal(key, (1, b, 128, 16, 8)).astype("float32")
-        Kb = jax.random.normal(key, (1, b, 128, 16, 8)).astype("float32")
-        Vb = jax.random.normal(key, (1, b, 128, 16, 8)).astype("float32")
-        Mb = jax.random.normal(key, (1, b, 16, 128, 128)) > 0.5
-        Bb = jax.random.normal(key, (1, b, 16, 128, 128)).astype("float32") / 100
+        Qb = jax.random.uniform(key, (1, b, 128, 16, 8), dtype=jnp.float32)
+        Kb = jax.random.uniform(key, (1, b, 128, 16, 8), dtype=jnp.float32)
+        Vb = jax.random.uniform(key, (1, b, 128, 16, 8), dtype=jnp.float32)
+        Mb = jax.random.uniform(key, (1, b, 16, 128, 128)) > 0.5
+        Bb = jax.random.uniform(key, (1, b, 16, 128, 128), dtype=jnp.float32) / 100
         return Qb, Kb, Vb, Mb, Bb
 
     @staticmethod
